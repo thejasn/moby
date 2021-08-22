@@ -84,7 +84,7 @@ func (i *ImageService) ImagesPrune(ctx context.Context, pruneFilters filters.Arg
 			}
 
 			if len(i.referenceStore.References(dgst)) == 0 && len(i.imageStore.Children(id)) != 0 {
-				logrus.Infof("skipping adding to topImages")
+				logrus.Infof("skipping adding to top Images")
 				continue
 			}
 			if !until.IsZero() && img.Created.After(until) {
