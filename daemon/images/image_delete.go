@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker/pkg/stringid"
 	"github.com/docker/docker/pkg/system"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 type conflictType int
@@ -81,12 +82,15 @@ func (i *ImageService) ImageDelete(imageRef string, force, prune bool) ([]types.
 
 	var removedRepositoryRef bool
 	if !isImageIDPrefix(imgID.String(), imageRef) {
+		logrus.Info("image ref is not image id prefix")
+
 		// A repository reference was given and should be removed
 		// first. We can only remove this reference if either force is
 		// true, there are multiple repository references to this
 		// image, or there are no containers using the given reference.
-		if !force && isSingleReference(repoRefs) {
+		if !force && (i.isContainerInUse(using) || isSingleReference(repoRefs)) {
 			if container := i.containers.First(using); container != nil {
+				logrus.Infof("skipping image %v from deleting since container exists %v", imgID, container)
 				// If we removed the repository reference then
 				// this image would remain "dangling" and since
 				// we really want to avoid that the client must
@@ -137,7 +141,6 @@ func (i *ImageService) ImageDelete(imageRef string, force, prune bool) ([]types.
 						records = append(records, untaggedRecord)
 					} else {
 						remainingRefs = append(remainingRefs, repoRef)
-
 					}
 				}
 				repoRefs = remainingRefs
@@ -154,6 +157,8 @@ func (i *ImageService) ImageDelete(imageRef string, force, prune bool) ([]types.
 		// If an ID reference was given AND there is at most one tag
 		// reference to the image AND all references are within one
 		// repository, then remove all references.
+
+		// TODO: need to modify this logic here.
 		if isSingleReference(repoRefs) {
 			c := conflictHard
 			if !force {
@@ -186,9 +191,16 @@ func (i *ImageService) ImageDelete(imageRef string, force, prune bool) ([]types.
 	return records, nil
 }
 
+func (i *ImageService) isContainerInUse(containerFilter func(c *container.Container) bool) bool {
+	container := i.containers.First(containerFilter)
+	return container != nil
+}
+
 // isSingleReference returns true when all references are from one repository
 // and there is at most one tag. Returns false for empty input.
 func isSingleReference(repoRefs []reference.Named) bool {
+	logrus.Infof("repo refs %v", repoRefs)
+
 	if len(repoRefs) <= 1 {
 		return len(repoRefs) == 1
 	}
@@ -196,8 +208,12 @@ func isSingleReference(repoRefs []reference.Named) bool {
 	canonicalRefs := map[string]struct{}{}
 	for _, repoRef := range repoRefs {
 		if _, isCanonical := repoRef.(reference.Canonical); isCanonical {
+
+			logrus.Infof("image ref is canonical, ref %v and canonical %v", repoRef, isCanonical)
 			canonicalRefs[repoRef.Name()] = struct{}{}
 		} else if singleRef == nil {
+
+			logrus.Infof("image ref is a single ref %v", repoRef)
 			singleRef = repoRef
 		} else {
 			return false
@@ -233,6 +249,7 @@ func isImageIDPrefix(imageID, possiblePrefix string) bool {
 func (i *ImageService) removeImageRef(ref reference.Named) (reference.Named, error) {
 	ref = reference.TagNameOnly(ref)
 
+	logrus.Infof("calling removeImageRef for ref %v", ref)
 	// Ignore the boolean value returned, as far as we're concerned, this
 	// is an idempotent operation and it's okay if the reference didn't
 	// exist in the first place.
@@ -298,12 +315,16 @@ func (idc *imageDeleteConflict) Conflict() {}
 // the image. If quiet is true, any encountered conflicts will be ignored and
 // the function will return nil immediately without deleting the image.
 func (i *ImageService) imageDeleteHelper(imgID image.ID, records *[]types.ImageDeleteResponseItem, force, prune, quiet bool) error {
+	logrus.Infof("conflictsoft %v, conflictActiveRef %v", conflictSoft, conflictActiveReference)
+
 	// First, determine if this image has any conflicts. Ignore soft conflicts
 	// if force is true.
 	c := conflictHard
 	if !force {
 		c |= conflictSoft
 	}
+
+	logrus.Infof("calling helper to check for conflicts for imageID %v", imgID)
 	if conflict := i.checkImageDeleteConflict(imgID, c); conflict != nil {
 		if quiet && (!i.imageIsDangling(imgID) || conflict.used) {
 			// Ignore conflicts UNLESS the image is "dangling" or not being used in
@@ -366,9 +387,12 @@ func (i *ImageService) checkImageDeleteConflict(imgID image.ID, mask conflictTyp
 		}
 	}
 
+	logrus.Info("checking image delete conflicts")
+
 	if mask&conflictRunningContainer != 0 {
 		// Check if any running container is using the image.
 		running := func(c *container.Container) bool {
+			logrus.Infof("running filter criteria on img %s", imgID)
 			return c.ImageID == imgID && c.IsRunning()
 		}
 		if container := i.containers.First(running); container != nil {
@@ -378,6 +402,8 @@ func (i *ImageService) checkImageDeleteConflict(imgID image.ID, mask conflictTyp
 				used:    true,
 				message: fmt.Sprintf("image is being used by running container %s", stringid.TruncateID(container.ID)),
 			}
+		} else {
+			logrus.Infof("no container running for image %s", imgID)
 		}
 	}
 

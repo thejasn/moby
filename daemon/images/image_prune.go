@@ -66,17 +66,25 @@ func (i *ImageService) ImagesPrune(ctx context.Context, pruneFilters filters.Arg
 	} else {
 		allImages = i.imageStore.Map()
 	}
+	logrus.Infof("all images %v, len: %d", allImages, len(allImages))
 
 	// Filter intermediary images and get their unique size
 	allLayers := i.layerStore.Map()
 	topImages := map[image.ID]*image.Image{}
 	for id, img := range allImages {
+		logrus.Infof("processing img %v, id %v", img, id)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 			dgst := digest.Digest(id)
+			logrus.Infof("references %v, children %v", i.referenceStore.References(dgst), i.imageStore.Children(id))
+			for _, c := range i.containers.List() {
+				logrus.Infof("%+v", c)
+			}
+
 			if len(i.referenceStore.References(dgst)) == 0 && len(i.imageStore.Children(id)) != 0 {
+				logrus.Infof("skipping adding to topImages")
 				continue
 			}
 			if !until.IsZero() && img.Created.After(until) {
@@ -88,6 +96,8 @@ func (i *ImageService) ImagesPrune(ctx context.Context, pruneFilters filters.Arg
 			topImages[id] = img
 		}
 	}
+
+	logrus.Infof("filtered images top %v", topImages)
 
 	canceled := false
 deleteImagesLoop:
@@ -119,6 +129,9 @@ deleteImagesLoop:
 
 			if shouldDelete {
 				for _, ref := range refs {
+					// TODO: need to check if refs are in running state.
+					// probably in imageStore
+					logrus.Infof("calling image delete on ref: %v", ref.String())
 					imgDel, err := i.ImageDelete(ref.String(), false, true)
 					if imageDeleteFailed(ref.String(), err) {
 						continue
